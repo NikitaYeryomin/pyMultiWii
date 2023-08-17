@@ -173,8 +173,6 @@ class MultiWii:
         timer = 0
         start = time.time()
         while timer < 0.5:
-            #data = [1500,1500,2000,1000]
-            # Throttle minimum, elevons neutral
             data = [1500, 1500, 2000, 1000]
             self.sendCMD(8, MultiWii.SET_RAW_RC, data, '4H')
             time.sleep(0.05)
@@ -187,9 +185,6 @@ class MultiWii:
         start = time.time()
         while timer < 0.5:
             data = [1500,1500,1000,1000]
-            # Throttle minimum, elevons neutral
-            # data = [1000, 1500, 1500]
-
             self.sendCMD(8,MultiWii.SET_RAW_RC,data,'4H')
             time.sleep(0.05)
             timer = timer + (time.time() - start)
