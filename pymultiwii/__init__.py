@@ -12,7 +12,7 @@ __email__ = "alduxvm@gmail.com"
 __status__ = "Development"
 
 
-import serial, time, struct
+import socket, time, struct
 
 
 class MultiWii:
@@ -60,7 +60,7 @@ class MultiWii:
 
 
     """Class initialization"""
-    def __init__(self, serPort):
+    def __init__(self, host, port):
 
         """Global variables of data"""
         self.PIDcoef = {'rp':0,'ri':0,'rd':0,'pp':0,'pi':0,'pd':0,'yp':0,'yi':0,'yd':0}
@@ -76,31 +76,22 @@ class MultiWii:
         self.elapsed = 0
         self.PRINT = 1
 
-        self.ser = serial.Serial()
-        self.ser.port = serPort
-        self.ser.baudrate = 115200
-        self.ser.bytesize = serial.EIGHTBITS
-        self.ser.parity = serial.PARITY_NONE
-        self.ser.stopbits = serial.STOPBITS_ONE
-        self.ser.timeout = 0
-        self.ser.xonxoff = False
-        self.ser.rtscts = False
-        self.ser.dsrdtr = False
-        self.ser.writeTimeout = 2
-        """Time to wait until the board becomes operational"""
-        wakeup = 2
+        # Establish a TCP connection to the specified host and port
+        self.host = host
+        self.port = port
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.connect((host, port))
+    
         try:
-            self.ser.open()
+            self.sock.connect((host, port))
             if self.PRINT:
-                print ("Waking up board on "+self.ser.port+"...")
-            for i in range(1,wakeup):
-                if self.PRINT:
-                    print (wakeup-i)
-                    time.sleep(1)
-                else:
-                    time.sleep(1)
+                print ("Connected to the board on " + host + ":" + str(port))
         except Exception as error:
-            print ("\n\nError opening "+self.ser.port+" port.\n"+str(error)+"\n\n")
+            print("\n\nError connecting to " + host + ":" + str(port))
+            print(str(error) + "\n\n")
+        
+        #"wakeup", not sure it's needed with SITL
+        time.sleep(2)
 
     """Function for sending a command to the board"""
     def sendCMD(self, data_length, code, data, data_format):
@@ -111,7 +102,8 @@ class MultiWii:
         total_data.append(checksum)
         try:
             b = None
-            b = self.ser.write(struct.pack('<3c2B'+ data_format + 'B', *total_data))
+            #b = self.ser.write(struct.pack('<3c2B'+ data_format + 'B', *total_data))
+            b = self.sock.send(struct.pack('<3c2B'+ data_format + 'B', *total_data))
         except Exception as error:
             print ("\n\nError in sendCMD.")
             print ("("+str(error)+")\n\n")
@@ -134,33 +126,37 @@ class MultiWii:
         for i in struct.pack('<2B%dH' % len(data), *total_data[3:len(total_data)]):
             checksum = checksum ^ i
         total_data.append(checksum)
+
         try:
             start = time.time()
-            b = None
-            b = self.ser.write(struct.pack('<3c2B%dHB' % len(data), *total_data))
+            b = self.sock.send(struct.pack('<3c2B%dHB' % len(data), *total_data))
             
             while True:
-                header = self.ser.read().decode('utf-8')
+                header = self.sock.recv(1).decode('utf-8')
                 if header == '$':
-                    header = header+self.ser.read(2).decode('utf-8')
+                    header = header + self.sock.recv(2).decode('utf-8')
                     break
-            datalength = struct.unpack('<b', self.ser.read())[0]
-            code = struct.unpack('<b', self.ser.read())
-            data = self.ser.read(datalength)
+
+            datalength = struct.unpack('<b', self.sock.recv(1))[0]
+            code = struct.unpack('<b', self.sock.recv(1))
+            data = self.sock.recv(datalength)
             temp = struct.unpack('<'+'h'*int(datalength/2),data)
-            self.ser.flushInput()
-            self.ser.flushOutput()
+            
+            # Instead of flushing (since we're using sockets now), you might consider implementing your own buffer or manage the data you've read.
+            
             elapsed = time.time() - start
-            self.attitude['angx']=float(temp[0]/10.0)
-            self.attitude['angy']=float(temp[1]/10.0)
-            self.attitude['heading']=float(temp[2])
-            self.attitude['elapsed']=round(elapsed,3)
-            self.attitude['timestamp']="%0.2f" % (time.time(),) 
+            self.attitude['angx'] = float(temp[0]/10.0)
+            self.attitude['angy'] = float(temp[1]/10.0)
+            self.attitude['heading'] = float(temp[2])
+            self.attitude['elapsed'] = round(elapsed, 3)
+            self.attitude['timestamp'] = "%0.2f" % (time.time(),) 
             return self.attitude
+
         except Exception as error:
             print ("\n\nError in sendCMDreceiveATT.")
             print ("("+str(error)+")\n\n")
             pass
+
 
     """Function to arm / disarm """
     """
@@ -177,21 +173,28 @@ class MultiWii:
         timer = 0
         start = time.time()
         while timer < 0.5:
-            data = [1500,1500,2000,1000]
-            self.sendCMD(8,MultiWii.SET_RAW_RC,data)
+            #data = [1500,1500,2000,1000]
+            # Throttle minimum, elevons neutral
+            data = [1500, 1500, 2000, 1000]
+            self.sendCMD(8, MultiWii.SET_RAW_RC, data, '4H')
             time.sleep(0.05)
             timer = timer + (time.time() - start)
             start =  time.time()
+        return True
 
     def disarm(self):
         timer = 0
         start = time.time()
         while timer < 0.5:
             data = [1500,1500,1000,1000]
-            self.sendCMD(8,MultiWii.SET_RAW_RC,data)
+            # Throttle minimum, elevons neutral
+            # data = [1000, 1500, 1500]
+
+            self.sendCMD(8,MultiWii.SET_RAW_RC,data,'4H')
             time.sleep(0.05)
             timer = timer + (time.time() - start)
             start =  time.time()
+        return True
     
     def setPID(self,pd):
         nd=[]
@@ -203,42 +206,56 @@ class MultiWii:
         self.sendCMD(0,MultiWii.EEPROM_WRITE,[])
 
     def setVTX(self,band,channel,power):
-        band_channel = ((band-1) << 3)|(channel-1)
+        band_channel = ((band-1) << 3) | (channel-1)
         t = None
-        while t == None :
+        while t == None:
             t = self.getData(MultiWii.VTX_CONFIG)
-        different = (self.vtxConfig['band'] != band) | (self.vtxConfig['channel'] != channel) | (self.vtxConfig['power'] != power)
-        data = [band_channel,power,self.vtxConfig['pit']]
-        while different :
-            self.sendCMD(4,MultiWii.VTX_SET_CONFIG,data, 'H2B')
+        different = (self.vtxConfig['band'] != band) or (self.vtxConfig['channel'] != channel) or (self.vtxConfig['power'] != power)
+        data = [band_channel, power, self.vtxConfig['pit']]
+        while different:
+            self.sendCMD(4, MultiWii.VTX_SET_CONFIG, data, 'H2B')
             time.sleep(1)
-            self.sendCMD(0,MultiWii.EEPROM_WRITE,[],'')
-            self.ser.close()
+            self.sendCMD(0, MultiWii.EEPROM_WRITE, [], '')
+            self.disconnect()
             time.sleep(3)
-            self.ser.open()
+            self.connect()
             time.sleep(3)
             t = None
-            while t == None :
+            while t == None:
                 t = self.getData(MultiWii.VTX_CONFIG)
             print(t)
-            different = (self.vtxConfig['band'] != band) | (self.vtxConfig['channel'] != channel) | (self.vtxConfig['power'] != power)
+            different = (self.vtxConfig['band'] != band) or (self.vtxConfig['channel'] != channel) or (self.vtxConfig['power'] != power)
+
+    def disconnect(self):
+        self.sock.close()
+
+    def connect(self):
+        try:
+            self.sock.connect((self.host, self.port))
+        except Exception as error:
+            print("\n\nError connecting to " + self.host + ":" + str(self.port))
+            print(str(error) + "\n\n")
 
     """Function to receive a data packet from the board"""
     def getData(self, cmd):
         try:
             start = time.time()
-            self.sendCMD(0,cmd,[],'')
+            self.sendCMD(0, cmd, [], '')
+
             while True:
-                header = self.ser.read().decode('utf-8')
+                header = self.sock.recv(1).decode('utf-8')
+                # print('DEBUG: header: %s' % header)
                 if header == '$':
-                    header = header+self.ser.read(2).decode('utf-8')
+                    header = header + self.sock.recv(2).decode('utf-8')
                     break
-            datalength = struct.unpack('<b', self.ser.read())[0]
-            code = struct.unpack('<b', self.ser.read())
-            data = self.ser.read(datalength)
-            
-            self.ser.flushInput()
-            self.ser.flushOutput()
+
+            datalength = struct.unpack('<b', self.sock.recv(1))[0]
+            # print('DEBUG: datalength: %s' % datalength)
+            code = struct.unpack('<b', self.sock.recv(1))
+            data = self.sock.recv(datalength)
+            # print('DEBUG: data: %s' % data)
+
+            # Remove serial flush since sockets don't have this method
             elapsed = time.time() - start
             if cmd == MultiWii.ATTITUDE:
                 temp = struct.unpack('<'+'h'*int(datalength/2),data)                
@@ -332,96 +349,103 @@ class MultiWii:
     def getDataInf(self, cmd):
         while True:
             try:
-                start = time.clock()
-                self.sendCMD(0,cmd,[])
+                start = time.time()
+                self.sendCMD(0, cmd, [])
+
                 while True:
-                    header = self.ser.read().decode('utf-8')
+                    header = self.sock.recv(1).decode('utf-8')
                     if header == '$':
-                        header = header+self.ser.read(2).decode('utf-8')
+                        header = header + self.sock.recv(2).decode('utf-8')
                         break
-                datalength = struct.unpack('<b', self.ser.read())[0]
-                code = struct.unpack('<b', self.ser.read())
-                data = self.ser.read(datalength)
-                temp = struct.unpack('<'+'h'*int(datalength/2),data)
-                elapsed = time.clock() - start
-                self.ser.flushInput()
-                self.ser.flushOutput()
+
+                datalength = struct.unpack('<b', self.sock.recv(1))[0]
+                code = struct.unpack('<b', self.sock.recv(1))
+                data = self.sock.recv(datalength)
+
+                temp = struct.unpack('<' + 'h' * int(datalength/2), data)
+                elapsed = time.time() - start
+
+                # The lines flushing the serial buffer are removed since they don't apply to sockets
                 if cmd == MultiWii.ATTITUDE:
-                    self.attitude['angx']=float(temp[0]/10.0)
-                    self.attitude['angy']=float(temp[1]/10.0)
-                    self.attitude['heading']=float(temp[2])
-                    self.attitude['elapsed']="%0.3f" % (elapsed,)
-                    self.attitude['timestamp']="%0.2f" % (time.time(),)
+                    self.attitude['angx'] = float(temp[0] / 10.0)
+                    self.attitude['angy'] = float(temp[1] / 10.0)
+                    self.attitude['heading'] = float(temp[2])
+                    self.attitude['elapsed'] = "%0.3f" % (elapsed,)
+                    self.attitude['timestamp'] = "%0.2f" % (time.time(),)
                 elif cmd == MultiWii.RC:
-                    self.rcChannels['roll']=temp[0]
-                    self.rcChannels['pitch']=temp[1]
-                    self.rcChannels['yaw']=temp[2]
-                    self.rcChannels['throttle']=temp[3]
-                    self.rcChannels['elapsed']="%0.3f" % (elapsed,)
-                    self.rcChannels['timestamp']="%0.2f" % (time.time(),)
+                    self.rcChannels['roll'] = temp[0]
+                    self.rcChannels['pitch'] = temp[1]
+                    self.rcChannels['yaw'] = temp[2]
+                    self.rcChannels['throttle'] = temp[3]
+                    self.rcChannels['elapsed'] = "%0.3f" % (elapsed,)
+                    self.rcChannels['timestamp'] = "%0.2f" % (time.time(),)
                 elif cmd == MultiWii.RAW_IMU:
-                    self.rawIMU['ax']=float(temp[0])
-                    self.rawIMU['ay']=float(temp[1])
-                    self.rawIMU['az']=float(temp[2])
-                    self.rawIMU['gx']=float(temp[3])
-                    self.rawIMU['gy']=float(temp[4])
-                    self.rawIMU['gz']=float(temp[5])
-                    self.rawIMU['elapsed']="%0.3f" % (elapsed,)
-                    self.rawIMU['timestamp']="%0.2f" % (time.time(),)
+                    self.rawIMU['ax'] = float(temp[0])
+                    self.rawIMU['ay'] = float(temp[1])
+                    self.rawIMU['az'] = float(temp[2])
+                    self.rawIMU['gx'] = float(temp[3])
+                    self.rawIMU['gy'] = float(temp[4])
+                    self.rawIMU['gz'] = float(temp[5])
+                    self.rawIMU['elapsed'] = "%0.3f" % (elapsed,)
+                    self.rawIMU['timestamp'] = "%0.2f" % (time.time(),)
                 elif cmd == MultiWii.MOTOR:
-                    self.motor['m1']=float(temp[0])
-                    self.motor['m2']=float(temp[1])
-                    self.motor['m3']=float(temp[2])
-                    self.motor['m4']=float(temp[3])
-                    self.motor['elapsed']="%0.3f" % (elapsed,)
-                    self.motor['timestamp']="%0.2f" % (time.time(),)
+                    self.motor['m1'] = float(temp[0])
+                    self.motor['m2'] = float(temp[1])
+                    self.motor['m3'] = float(temp[2])
+                    self.motor['m4'] = float(temp[3])
+                    self.motor['elapsed'] = "%0.3f" % (elapsed,)
+                    self.motor['timestamp'] = "%0.2f" % (time.time(),)
             except Exception as error:
                 print(error)
                 pass
+
 
     """Function to ask for 2 fixed cmds, attitude and rc channels, and receive them. Note: is a bit slower than others"""
     def getData2cmd(self, cmd):
         try:
             start = time.time()
-            self.sendCMD(0,self.ATTITUDE,[])
-            while True:
-                header = self.ser.read().decode('utf-8')
-                if header == '$':
-                    header = header+self.ser.read(2).decode('utf-8')
-                    break
-            datalength = struct.unpack('<b', self.ser.read())[0]
-            code = struct.unpack('<b', self.ser.read())
-            data = self.ser.read(datalength)
-            temp = struct.unpack('<'+'h'*int(datalength/2),data)
-            self.ser.flushInput()
-            self.ser.flushOutput()
 
-            self.sendCMD(0,self.RC,[])
+            # First Command: ATTITUDE
+            self.sendCMD(0, self.ATTITUDE, [])
             while True:
-                header = self.ser.read().decode('utf-8')
+                header = self.sock.recv(1).decode('utf-8')
                 if header == '$':
-                    header = header+self.ser.read(2).decode('utf-8')
+                    header += self.sock.recv(2).decode('utf-8')
                     break
-            datalength = struct.unpack('<b', self.ser.read())[0]
-            code = struct.unpack('<b', self.ser.read())
-            data = self.ser.read(datalength)
-            temp2 = struct.unpack('<'+'h'*int(datalength/2),data)
+            datalength = struct.unpack('<b', self.sock.recv(1))[0]
+            code = struct.unpack('<b', self.sock.recv(1))
+            data = self.sock.recv(datalength)
+            temp = struct.unpack('<' + 'h' * int(datalength / 2), data)
+
+            # No need to flush for sockets
+
+            # Second Command: RC
+            self.sendCMD(0, self.RC, [])
+            while True:
+                header = self.sock.recv(1).decode('utf-8')
+                if header == '$':
+                    header += self.sock.recv(2).decode('utf-8')
+                    break
+            datalength = struct.unpack('<b', self.sock.recv(1))[0]
+            code = struct.unpack('<b', self.sock.recv(1))
+            data = self.sock.recv(datalength)
+            temp2 = struct.unpack('<' + 'h' * int(datalength / 2), data)
             elapsed = time.time() - start
-            self.ser.flushInput()
-            self.ser.flushOutput()
 
+            # Process and return data
             if cmd == MultiWii.ATTITUDE:
-                self.message['angx']=float(temp[0]/10.0)
-                self.message['angy']=float(temp[1]/10.0)
-                self.message['heading']=float(temp[2])
-                self.message['roll']=temp2[0]
-                self.message['pitch']=temp2[1]
-                self.message['yaw']=temp2[2]
-                self.message['throttle']=temp2[3]
-                self.message['elapsed']=round(elapsed,3)
-                self.message['timestamp']="%0.2f" % (time.time(),) 
+                self.message['angx'] = float(temp[0] / 10.0)
+                self.message['angy'] = float(temp[1] / 10.0)
+                self.message['heading'] = float(temp[2])
+                self.message['roll'] = temp2[0]
+                self.message['pitch'] = temp2[1]
+                self.message['yaw'] = temp2[2]
+                self.message['throttle'] = temp2[3]
+                self.message['elapsed'] = round(elapsed, 3)
+                self.message['timestamp'] = "%0.2f" % (time.time(),)
                 return self.message
             else:
                 return "No return error!"
+
         except Exception as error:
-            print (error)
+            print(error)
